@@ -1,0 +1,464 @@
+
+UPLOADING DATA TO RDBMS :
+
+
+
+create table AAL(date varchar(100),low float,open float,volume int,high float,close float,adjusted_close float);
+
+load data infile '/home/cloudera/Walmart Stock Analytics/AAL.csv' into table AAL fields terminated by ',' lines terminated by '\n' ignore 1 lines;
+
+create table AAOI(date varchar(100),low float,open float,volume int,high float,close float,adjusted_close float);
+
+load data infile '/home/cloudera/Walmart Stock Analytics/AAOI.csv' into table AAOI fields terminated by ',' lines terminated by '\n' ignore 1 lines;
+
+
+create table ABIO(date varchar(100),low float,open float,volume int,high float,close float,adjusted_close float);
+
+load data infile '/home/cloudera/Walmart Stock Analytics/ABIO.csv' into table ABIO fields terminated by ',' lines terminated by '\n' ignore 1 lines;
+
+create table ABMD(date varchar(100),low float,open float,volume int,high float,close float,adjusted_close float);
+
+load data infile '/home/cloudera/Walmart Stock Analytics/ABMD.csv' into table ABMD fields terminated by ',' lines terminated by '\n' ignore 1 lines;
+
+
+
+
+
+
+SQOOP UPLOAD FROM RDBMS TO HDFS : 
+
+
+sqoop import-all-tables --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --warehouse-dir /user/cloudera/stockanalysis -m 1
+
+
+
+
+
+
+
+HDFS to HIVE
+
+create table AAL(date string,low float,open float,volume int,high float,close float,adjusted_close float) row format delimited fields terminated by ',';
+load data inpath 'stockanalysis/AAL' into table AAL;
+
+create table AAOI(date string,low float,open float,volume int,high float,close float,adjusted_close float) row format delimited fields terminated by ',';
+load data inpath 'stockanalysis/AAOI' into table AAOI;
+
+create table ABIO(date string,low float,open float,volume int,high float,close float,adjusted_close float) row format delimited fields terminated by ',';
+load data inpath 'stockanalysis/ABIO' into table ABIO;
+
+create table ABMD(date string,low float,open float,volume int,high float,close float,adjusted_close float) row format delimited fields terminated by ',';
+load data inpath 'stockanalysis/ABMD' into table ABMD;
+
+
+
+
+HIVE QUERIES  :
+
+PS 1 :
+
+select date,open,close,abs((open-close)/open*100) as aal_perc from aal order by aal_perc desc limit 3;
+
+
+select date,open,close,abs((open-close)/open*100) as aaoi_perc from aaoi order by aaoi_perc desc limit 3;
+
+
+select date,open,close,abs((open-close)/open*100) as abio_perc from abio order by abio_perc desc  limit 3;
+
+
+select date,open,close,abs((open-close)/open*100) as abmd_perc from abmd order by abmd_perc desc limit 3;
+
+PS 2:
+AAL :
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from aal
+)
+select date,low from find_low_avg where low<avg_low; 
+
+AAOI
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from AAOI
+)
+select date,low from find_low_avg where low<avg_low; 
+
+
+ABIO
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abio
+)
+select date,low from find_low_avg where low<avg_low; 
+
+ABMD
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abmd
+)
+select date,low from find_low_avg where low<avg_low; 
+
+
+PS 4:
+
+SELECT AAL.date
+FROM AAL
+LEFT JOIN AAOI ON AAL.date = AAOI.date
+LEFT JOIN ABMD ON AAL.date = ABMD.date
+WHERE AAL.open > AAOI.open OR AAL.volume > ABMD.volume;
+
+
+
+PS 5: 
+select date,volume,high,(volume/high) VH_Ratio from AAL;
+select date,volume,high,(volume/high) VH_Ratio from AAOI;
+select date,volume,high,(volume/high) VH_Ratio from ABIO;
+select date,volume,high,(volume/high) VH_Ratio from ABMD;
+
+PS 6:
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAL) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAOI) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABIO) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABMD) select date from cte where open-cl>0;
+
+PS 7:
+
+SELECT percentile_approx(volume, 0.5) AS median_volume
+FROM ABIO;
+
+
+SELECT
+  percentile(volume, 0.5) AS median_volume
+FROM (
+  SELECT
+    volume,
+    row_number() OVER (ORDER BY volume) AS row_num,
+    count(*) OVER () AS total_rows
+  FROM ABIO
+) sub
+WHERE row_num >= (total_rows + 1) / 2 AND row_num <= total_rows / 2 + 1;
+
+
+
+
+Creating Buckets for Tables:
+
+
+create table AAL_buck(date string,low float,open float,volume int,high float,close float,adjusted_close float) clustered by(date) into 5 buckets row format delimited fields terminated by ',';
+set hive.enforce.bucketing=true;
+insert overwrite table AAL_buck select * from AAL;
+
+create table AAOI_buck(date string,low float,open float,volume int,high float,close float,adjusted_close float) clustered by(date) into 5 buckets row format delimited fields terminated by ',';
+insert overwrite table AAOI_buck select * from AAOI;
+
+create table ABIO_buck(date string,low float,open float,volume int,high float,close float,adjusted_close float) clustered by(date) into 5 buckets row format delimited fields terminated by ',';
+insert overwrite table ABIO_buck select * from ABIO;
+
+create table ABMD_buck(date string,low float,open float,volume int,high float,close float,adjusted_close float) clustered by(date) into 5 buckets row format delimited fields terminated by ',';
+insert overwrite table ABMD_buck select * from ABMD;
+
+ANALYZING USING HIVE ON BUCKETED COLUMNS :
+
+PS 1 :
+
+select date,open,close,abs((open-close)/open*100) as aal_perc from aal_buck order by aal_perc desc limit 3;
+
+select date,open,close,abs((open-close)/open*100) as aaoi_perc from aaoi_buck order by aaoi_perc desc limit 3;
+
+select date,open,close,abs((open-close)/open*100) as abio_perc from abio_buck order by abio_perc desc  limit 3;
+
+select date,open,close,abs((open-close)/open*100) as abmd_perc from abmd_buck order by abmd_perc desc limit 3;
+
+
+PS 2:
+
+AAL :
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from aal_buck
+)
+select date,low from find_low_avg where low<avg_low; 
+
+AAOI
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from AAOI_buck
+)
+select date,low from find_low_avg where low<avg_low; 
+
+
+ABIO
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abio_buck
+)
+select date,low from find_low_avg where low<avg_low; 
+
+ABMD
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abmd_buck
+)
+select date,low from find_low_avg where low<avg_low; 
+
+PS 3:
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from AAL order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+select min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn
+
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from AAOI order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+select min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn
+
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from ABIO order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+select min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from ABMD order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+select min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn
+
+PS 4:
+
+SELECT AAL_buck.date,AAL_buck.open,AAOI_buck.open,AAL_buck.volume,ABMD_buck.volume
+FROM AAL_buck
+LEFT JOIN AAOI_buck ON AAL_buck.date = AAOI_buck.date
+LEFT JOIN ABMD_buck ON AAL_buck.date = ABMD_buck.date
+WHERE AAL_buck.open > AAOI_buck.open OR AAL_buck.volume > ABMD_buck.volume;
+
+PS 5 :
+
+select date,volume,high,(volume/high) VH_Ratio from AAL_buck;
+select date,volume,high,(volume/high) VH_Ratio from AAOI_buck;
+select date,volume,high,(volume/high) VH_Ratio from ABIO_buck;
+select date,volume,high,(volume/high) VH_Ratio from ABMD_buck;
+
+PS 6 :
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAL_buck) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAOI_buck) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABIO_buck) select date from cte where open-cl>0;
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABMD_buck) select date from cte where open-cl>0;
+
+PS 7:
+
+SELECT percentile_approx(volume, 0.5) AS median_volume
+FROM ABIO_buck;
+
+
+
+CREATING EXTERNALTABLES FOR OUTPUTS NAD INSERTING DATA INTO IT
+
+PS 1:
+create external table stock_et(date string,open float,close float,open_close_perc float,stock_name string) row format delimited fields terminated by ',';
+
+insert overwrite table stock_et select date,open,close,abs((open-close)/open*100) as open_close_perc,'aal' from aal order by open_close_perc desc limit 3
+union all
+select date,open,close,abs((open-close)/open*100) as open_close_perc,'aaoi' from aaoi order by open_close_perc desc limit 3
+union all
+select date,open,close,abs((open-close)/open*100) as open_close_perc,'abio' from abio order by open_close_perc desc  limit 3
+union all
+select date,open,close,abs((open-close)/open*100) as open_close_perc,'abmd' from abmd order by open_close_perc desc limit 3;
+
+
+PS 2:
+
+AAL :
+create external table aal_lowavg_et(date string,low float,avg_low float) row format delimited fields terminated by ',';
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from aal_buck
+)
+insert overwrite table aal_lowavg_et select date,low,avg_low from find_low_avg where low<avg_low; 
+
+AAOI
+create external table aaoi_lowavg_et(date string,low float,avg_low float) row format delimited fields terminated by ',';
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from AAOI_buck
+)
+insert overwrite table aaoi_lowavg_et select date,low,avg_low from find_low_avg where low<avg_low; 
+
+
+
+ABIO
+create external table abio_lowavg_et(date string,low float,avg_low float) row format delimited fields terminated by ',';
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abio_buck
+)
+insert overwrite table abio_lowavg_et select date,low,avg_low from find_low_avg where low<avg_low; 
+
+
+ABMD
+create external table abmd_lowavg_et(date string,low float,avg_low float) row format delimited fields terminated by ',';
+
+with find_low_avg as(
+select date,low,avg(low) over(partition by substr(date,4,7)) as avg_low from abmd_buck
+)
+insert overwrite table abmd_lowavg_et select date,low,avg_low from find_low_avg where low<avg_low; 
+
+
+PS 3:
+create external table ps3_aal(stock_name string,start_date string,streak int);
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from AAL order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+insert overwrite table ps3_aal select 'aal',min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn;
+
+
+create external table ps3_aaoi(stock_name string,start_date string,streak int);
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from AAOI order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+insert overwrite table ps3_aaoi select 'aaoi',min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn;
+
+create external table ps3_ABIO(stock_name string,start_date string,streak int);
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from ABIO order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+insert overwrite table ps3_ABIO select 'abio',min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn;
+
+
+create external table ps3_ABMD(stock_name string,start_date string,streak int);
+
+with cte1 as(
+select from_unixtime(unix_timestamp(date,'dd-MM-yyyy')) as date,close,lead(close) over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as next_close,row_number() over(order by from_unixtime(unix_timestamp(date,'dd-MM-yyyy'))) as rn from ABMD order by date),
+cte2 as (
+select date,close,next_close,rn,rn-row_number() over(order by date) as nrn from cte1 where next_close>close),
+cte3 as (
+select date,close,next_close,rn,nrn,count(*) over(partition by nrn) as streak from cte2)
+insert overwrite table ps3_ABMD select 'abmd',min(date) as start_date,min(m.streak) as streak from cte3 join (select max(streak) as streak from  cte3) as m on m.streak=cte3.streak group by nrn;
+
+
+create external table ps3(stock_name string,start_date string,streak int);
+
+insert overwrite table ps3 select stock_name,start_date,streak from ps3_aal
+union all
+select stock_name,start_date,streak from ps3_aaoi
+union all
+select stock_name,start_date,streak from ps3_ABIO
+union all
+select stock_name,start_date,streak from ps3_ABMD;
+
+PS 4:
+create external table hive_ps4_et(date string,aal_open float,aaoi_open float,aal_volume int,abmd_volume int) row format delimited fields terminated by ',';
+insert overwrite table hive_ps4_et SELECT AAL_buck.date,AAL_buck.open,AAOI_buck.open,AAL_buck.volume,ABMD_buck.volume
+FROM AAL_buck
+LEFT JOIN AAOI_buck ON AAL_buck.date = AAOI_buck.date
+LEFT JOIN ABMD_buck ON AAL_buck.date = ABMD_buck.date
+WHERE AAL_buck.open > AAOI_buck.open OR AAL_buck.volume > ABMD_buck.volume;
+
+PS 5 :
+create table vhratio_ps5 (date string,volume int,high float,VH_Ratio float,stock_name string) row format delimited fields terminated by ',';
+insert overwrite table vhratio_ps5 select date,volume,high,(volume/high) VH_Ratio,'aal' from AAL_buck
+union all
+select date,volume,high,(volume/high) VH_Ratio,'aaoi' from AAOI_buck
+union all
+select date,volume,high,(volume/high) VH_Ratio,'abio' from ABIO_buck
+union all
+select date,volume,high,(volume/high) VH_Ratio,'abmd' from ABMD_buck;
+
+PS 6 :
+create table aal_ps6_et (date string) row format delimited fields terminated by ',';
+
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAL_buck) 
+insert overwrite table aal_ps6_et select date from cte where open-cl>0;
+
+create table aaoi_ps6_et (date string) row format delimited fields terminated by ',';
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from AAOI_buck) 
+insert overwrite table aaoi_ps6_et select date from cte where open-cl>0;
+
+create table abio_ps6_et (date string) row format delimited fields terminated by ',';
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABIO_buck) 
+insert overwrite table abio_ps6_et select date from cte where open-cl>0;
+
+create table abmd_ps6_et (date string) row format delimited fields terminated by ',';
+with cte as (select to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy'))) as date,open,lag(close) over(order by to_date(FROM_UNIXTIME(UNIX_TIMESTAMP(date,'dd-MM-yyyy')))) as cl from ABMD_buck) 
+insert overwrite table abmd_ps6_et select date from cte where open-cl>0;
+
+create external table ps6_et(date string,stock_name string) row format delimited fields terminated by ',';
+
+insert overwrite table ps6_et select date,'aal' from aal_ps6_et
+union all
+select date,'aaoi' from aaoi_ps6_et
+union all
+select date,'abio' from abio_ps6_et
+union all
+select date,'abmd' from abmd_ps6_et;
+
+
+CREATING TABLES IN MYSQL TABLE FOR EXTERNAL TABLES AND SQOOP EXPORTING
+
+create table ps1(date varchar(40),open float,close float,open_close_perc float,stock_name varchar(30));
+create table aal_ps2(date varchar(40),low float,avg_low float);
+create table aaoi_ps2(date varchar(40),low float,avg_low float);
+create table abio_ps2(date varchar(40),low float,avg_low float);
+create table abmd_ps2(date varchar(40),low float,avg_low float);
+create table ps2(date varchar(40),low float,avg_low float,stock_name string);
+create table ps3(stock_name varchar(20),start_date varchar(50),streak int);
+create table ps4(date varchar(40),aal_open float,aaoi_open float,aal_volume int,abmd_volume int);
+create table ps5(date varchar(40),volume int,high float,VH_Ratio float,stock_name varchar(30));
+create table ps6(date varchar(40),stock_name varchar(30));
+
+insert into ps2 select date,low,avg_low,'aal' from aal_ps2
+union all
+select date,low,avg_low,'aaoi' from aaoi_ps2
+union all
+select date,low,avg_low,'abio' from abio_ps2
+union all
+select date,low,avg_low,'abmd' from abmd_ps2
+
+SQOOP TO EXPORT DATA TO MYSQL(yet  to be modified)
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table ps1 --export-dir /user/hive/warehouse/stock_et/000000_0 -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table aal_ps2 --export-dir /user/hive/warehouse/aal_lowavg_et/* -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table aaoi_ps2 --export-dir /user/hive/warehouse/aaoi_lowavg_et/* -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table abio_ps2 --export-dir /user/hive/warehouse/abio_lowavg_et/* -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table abmd_ps2 --export-dir /user/hive/warehouse/abmd_lowavg_et/* -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table ps3 --export-dir /user/hive/warehouse/ps3/* -m 1 
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table ps4 --export-dir /user/hive/warehouse/hive_ps4_et/* -m 1 --input-null-non-string '\\N' --input-null-string '\\N' 
+
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table ps5 --export-dir /user/hive/warehouse/vhratio_ps5 -m 1
+
+sqoop export --connect jdbc:mysql://localhost:3306/walmart_stock_analysis --username root --password cloudera --table ps6 --export-dir /user/hive/warehouse/ps6_et/* -m 1 
+
+
+
